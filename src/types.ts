@@ -1,4 +1,8 @@
-/** A currency accepted for payment: native SOL, or an SPL token identified by its mint. */
+/**
+ * A currency accepted for payment: native SOL, or an SPL token identified by
+ * its mint. `decimals` on the SPL variant isn't optional bookkeeping — SPL
+ * transferChecked instructions require it to build and to verify a transfer.
+ */
 export type Currency =
   | { kind: "native" }
   | { kind: "spl"; mint: string; decimals: number };
@@ -37,7 +41,18 @@ export type PaymentRejectionReason =
   | "no-matching-payment-found";
 
 export type PaymentEvaluation =
-  | { valid: true; matchedPrice?: PriceEntry; grant: AccessGrant }
+  | {
+      valid: true;
+      /**
+       * The PriceEntry the payment matched. Only present when this evaluation
+       * came from a fresh on-chain check (evaluatePayment, resolvePaymentBySignature,
+       * findPaymentForResource) — a cache hit from a PaymentRecordStore-backed
+       * lookup returns the previously-established grant without re-deriving
+       * which price it was originally paid against.
+       */
+      matchedPrice?: PriceEntry;
+      grant: AccessGrant;
+    }
   | { valid: false; reason: PaymentRejectionReason };
 
 /**

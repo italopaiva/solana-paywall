@@ -108,6 +108,30 @@ function resolvesToWallet(
   return accountAddress === expectedAta.toBase58();
 }
 
+type ParsedCandidate = {
+  extracted: ExtractedTransfer;
+  memo: string | null;
+  blockTime: number;
+};
+
+/** Shared by parseObservedTransfer and the history scan: validity + extraction only. */
+function parseCandidate(tx: ParsedTransactionWithMeta | null): ParsedCandidate | null {
+  if (!tx || !tx.meta || tx.meta.err || tx.blockTime == null) {
+    return null;
+  }
+
+  const extracted = extractTransfer(tx.transaction.message.instructions);
+  if (!extracted) {
+    return null;
+  }
+
+  return {
+    extracted,
+    memo: extractMemo(tx.transaction.message.instructions),
+    blockTime: tx.blockTime,
+  };
+}
+
 /**
  * Pure: normalizes a parsed RPC transaction into an ObservedTransfer.
  * Returns null if the transaction is missing, failed, or contains no recognizable
@@ -118,30 +142,41 @@ export function parseObservedTransfer(
   tx: ParsedTransactionWithMeta | null,
   receivingWallet: string,
 ): ObservedTransfer | null {
-  if (!tx || !tx.meta || tx.meta.err || tx.blockTime == null) {
-    return null;
-  }
-
-  const extracted = extractTransfer(tx.transaction.message.instructions);
-  if (!extracted) {
+  const candidate = parseCandidate(tx);
+  if (!candidate) {
     return null;
   }
 
   const destination = resolvesToWallet(
-    extracted.destination,
+    candidate.extracted.destination,
     receivingWallet,
-    extracted.currency,
+    candidate.extracted.currency,
   )
     ? receivingWallet
-    : extracted.destination;
+    : candidate.extracted.destination;
 
   return {
     destination,
-    currency: extracted.currency,
-    amount: extracted.amount,
-    memo: extractMemo(tx.transaction.message.instructions),
-    blockTime: tx.blockTime,
+    currency: candidate.extracted.currency,
+    amount: candidate.extracted.amount,
+    memo: candidate.memo,
+    blockTime: candidate.blockTime,
   };
+}
+
+const HISTORY_FETCH_BATCH_SIZE = 10;
+
+async function fetchInBatches<T, R>(
+  items: T[],
+  batchSize: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = [];
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    results.push(...(await Promise.all(batch.map(fn))));
+  }
+  return results;
 }
 
 /**
@@ -171,34 +206,38 @@ export function createConnectionAdapter(
       { limit: 1000 },
     );
 
-    const transfers: ObservedTransfer[] = [];
-    for (const { signature } of signatures) {
-      const tx = await connection.getParsedTransaction(signature, {
-        maxSupportedTransactionVersion: 0,
-      });
-      if (!tx || !tx.meta || tx.meta.err || tx.blockTime == null) {
-        continue;
-      }
+    const transactions = await fetchInBatches(
+      signatures,
+      HISTORY_FETCH_BATCH_SIZE,
+      ({ signature }) =>
+        connection.getParsedTransaction(signature, { maxSupportedTransactionVersion: 0 }),
+    );
 
-      const extracted = extractTransfer(tx.transaction.message.instructions);
-      if (!extracted) {
+    const transfers: ObservedTransfer[] = [];
+    for (const tx of transactions) {
+      const candidate = parseCandidate(tx);
+      if (!candidate) {
         continue;
       }
-      if (!resolvesToWallet(extracted.source, payerWallet, extracted.currency)) {
+      if (!resolvesToWallet(candidate.extracted.source, payerWallet, candidate.extracted.currency)) {
         continue;
       }
       if (
-        !resolvesToWallet(extracted.destination, resolvedReceivingWallet, extracted.currency)
+        !resolvesToWallet(
+          candidate.extracted.destination,
+          resolvedReceivingWallet,
+          candidate.extracted.currency,
+        )
       ) {
         continue;
       }
 
       transfers.push({
         destination: resolvedReceivingWallet,
-        currency: extracted.currency,
-        amount: extracted.amount,
-        memo: extractMemo(tx.transaction.message.instructions),
-        blockTime: tx.blockTime,
+        currency: candidate.extracted.currency,
+        amount: candidate.extracted.amount,
+        memo: candidate.memo,
+        blockTime: candidate.blockTime,
       });
     }
 

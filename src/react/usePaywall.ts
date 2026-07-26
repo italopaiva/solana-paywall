@@ -60,6 +60,12 @@ function toAccessState(evaluation: PaymentEvaluation): PaywallAccessState {
  * hook's unlock decision is never authoritative for anything the client itself
  * shouldn't already be able to see — use Server-Verified Mode (the core lib,
  * from your own backend) for anything gating a real secret or server response.
+ *
+ * There is deliberately no PaymentRecordStore option here: the browser has
+ * nowhere durable to cache a lookup, so this hook always falls back to an
+ * on-chain Payment Lookup (or the cached-signature fast path). Store-backed
+ * caching (findPaymentForResourceWithCache / resolvePaymentBySignatureWithCache)
+ * is Server-Verified-Mode-only.
  */
 export function usePaywall(
   resource: Resource,
@@ -119,7 +125,12 @@ export function usePaywall(
     return () => {
       cancelled = true;
     };
-  }, [payerWallet, resource, options.receivingWallet, adapter]);
+    // `resource` is intentionally read from the closure rather than listed here:
+    // a Resource's identity is its id (see CONTEXT.md), so depending on the
+    // whole object would re-run this effect — re-fetching or re-scanning on
+    // every render — whenever a caller passes an inline Resource literal.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [payerWallet, resource.id, options.receivingWallet, adapter]);
 
   const pay = useCallback(
     async (currency: Currency) => {
