@@ -109,6 +109,7 @@ function resolvesToWallet(
 }
 
 type ParsedCandidate = {
+  signature: string;
   extracted: ExtractedTransfer;
   memo: string | null;
   blockTime: number;
@@ -120,12 +121,18 @@ function parseCandidate(tx: ParsedTransactionWithMeta | null): ParsedCandidate |
     return null;
   }
 
+  const signature = tx.transaction.signatures[0];
+  if (!signature) {
+    return null;
+  }
+
   const extracted = extractTransfer(tx.transaction.message.instructions);
   if (!extracted) {
     return null;
   }
 
   return {
+    signature,
     extracted,
     memo: extractMemo(tx.transaction.message.instructions),
     blockTime: tx.blockTime,
@@ -156,6 +163,7 @@ export function parseObservedTransfer(
     : candidate.extracted.destination;
 
   return {
+    signature: candidate.signature,
     destination,
     currency: candidate.extracted.currency,
     amount: candidate.extracted.amount,
@@ -233,6 +241,7 @@ export function createConnectionAdapter(
       }
 
       transfers.push({
+        signature: candidate.signature,
         destination: resolvedReceivingWallet,
         currency: candidate.extracted.currency,
         amount: candidate.extracted.amount,

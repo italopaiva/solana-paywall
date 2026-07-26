@@ -5,7 +5,7 @@
  */
 export type Currency =
   | { kind: "native" }
-  | { kind: "spl"; mint: string; decimals: number };
+  | { kind: "spl"; mint: string; decimals: number; symbol?: string };
 
 /** A fixed price in one accepted currency, in that currency's smallest unit. */
 export type PriceEntry = {
@@ -27,8 +27,8 @@ export type Resource = {
 
 /** The result of a valid payment: what access the payer now has. */
 export type AccessGrant =
-  | { kind: "permanent" }
-  | { kind: "timed"; expiresAt: number };
+  | { kind: "permanent"; paidAt: number }
+  | { kind: "timed"; expiresAt: number; paidAt: number };
 
 export type PaymentRejectionReason =
   | "wrong-receiving-wallet"
@@ -52,6 +52,13 @@ export type PaymentEvaluation =
        */
       matchedPrice?: PriceEntry;
       grant: AccessGrant;
+      /**
+       * The signature of the transaction that satisfied this evaluation.
+       * Present whenever the underlying ObservedTransfer carried one (every
+       * real on-chain check does) — absent only for a cache hit from a
+       * PaymentRecordStore-backed lookup, which has no transaction to point to.
+       */
+      signature?: string;
     }
   | { valid: false; reason: PaymentRejectionReason };
 
@@ -71,6 +78,8 @@ export type PaymentRecordStore = {
  * evaluatePayment never fetches or parses RPC data itself.
  */
 export type ObservedTransfer = {
+  /** The transaction signature this transfer was observed in. */
+  signature: string;
   /** Wallet address the transfer was ultimately sent to. */
   destination: string;
   currency: Currency;

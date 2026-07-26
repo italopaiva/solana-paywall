@@ -1,28 +1,189 @@
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
-import { Paywall } from "solana-paywall/react";
+import type { Connection } from "@solana/web3.js";
+import { useEffect, useState, type ReactNode } from "react";
+import type { AccessGrant, Currency, Resource } from "solana-paywall";
+import { usePaywall } from "solana-paywall/react";
+import { CurrencyIcon } from "./CurrencyIcon.js";
+import { currencyDecimals, currencyLabel, formatAmount, formatDuration, formatTimestamp } from "./format.js";
 import { RECEIVING_WALLET, sampleResource } from "./resource.js";
 import { Wallet } from "./Wallet.js";
 
+function Card({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="space-y-3 rounded-lg border border-slate-700 bg-slate-800/50 p-4">
+      <h2 className="text-xs font-medium uppercase tracking-wide text-slate-400">{title}</h2>
+      {children}
+    </section>
+  );
+}
+
+function Address({ value }: { value: string }) {
+  return (
+    <code className="block break-all rounded bg-slate-900 px-2 py-1 text-sm text-slate-200">
+      {value}
+    </code>
+  );
+}
+
+function ContentSkeleton() {
+  return (
+    <div aria-hidden className="animate-pulse space-y-3">
+      <div className="h-4 w-3/4 rounded bg-slate-700" />
+      <div className="h-4 w-full rounded bg-slate-700" />
+      <div className="h-4 w-5/6 rounded bg-slate-700" />
+      <div className="h-4 w-2/3 rounded bg-slate-700" />
+    </div>
+  );
+}
+
+function LockIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      className="h-6 w-6 text-slate-300"
+      aria-hidden
+    >
+      <rect x="4" y="10" width="16" height="10" rx="2" />
+      <path d="M8 10V7a4 4 0 1 1 8 0v3" />
+    </svg>
+  );
+}
+
+function LockedContent({
+  resource,
+  isPaying,
+  onPay,
+}: {
+  resource: Resource;
+  isPaying: boolean;
+  onPay: (currency: Currency) => void;
+}) {
+  return (
+    <div className="space-y-4">
+      <div className="relative overflow-hidden rounded-lg">
+        <div className="pointer-events-none select-none blur-sm">
+          <ContentSkeleton />
+        </div>
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-slate-900/75 text-center">
+          <LockIcon />
+          <p className="font-medium text-slate-100">This content is locked</p>
+          <p className="text-sm text-slate-400">Pay to unlock instant access.</p>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap gap-3">
+        {resource.priceList.map((entry) => {
+          const label = currencyLabel(entry.currency);
+          return (
+            <button
+              key={label}
+              type="button"
+              disabled={isPaying}
+              onClick={() => onPay(entry.currency)}
+              className="flex items-center gap-2 rounded-md bg-emerald-500 px-4 py-2 font-medium text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <CurrencyIcon currency={entry.currency} />
+              Pay {formatAmount(entry.amount, currencyDecimals(entry.currency))} {label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function PaymentMeta({ grant }: { grant: AccessGrant }) {
+  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+
+  useEffect(() => {
+    if (grant.kind !== "timed") {
+      return;
+    }
+    const id = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [grant.kind]);
+
+  return (
+    <p className="text-xs text-slate-400">
+      Paid at {formatTimestamp(grant.paidAt)}
+      {grant.kind === "timed"
+        ? ` · Time left: ${formatDuration(grant.expiresAt - now)}`
+        : " · Permanent access"}
+    </p>
+  );
+}
+
+function ContentSection({
+  resource,
+  connection,
+  receivingWallet,
+}: {
+  resource: Resource;
+  connection: Connection;
+  receivingWallet: string;
+}) {
+  const { access, isPaying, pay } = usePaywall(resource, { connection, receivingWallet });
+
+  return (
+    <Card title="Content">
+      {access.status === "loading" ? <ContentSkeleton /> : null}
+
+      {access.status === "not-paid" ? (
+        <LockedContent
+          resource={resource}
+          isPaying={isPaying}
+          onPay={(currency) => {
+            pay(currency).catch(() => {
+              // usePaywall already surfaces failures via `access`.
+            });
+          }}
+        />
+      ) : null}
+
+      {access.status === "error" ? <p className="text-sm text-red-400">{access.message}</p> : null}
+
+      {access.status === "granted" ? (
+        <div className="space-y-3">
+          <article className="space-y-2 rounded-lg border border-emerald-700 bg-emerald-950/30 p-4">
+            <h3 className="font-semibold text-emerald-300">Unlocked!</h3>
+            <p className="text-slate-300">
+              This is the gated content. Reload the page and it'll still show (cached
+              signature fast path), or clear localStorage and reload to see the on-chain
+              Payment Lookup find it again from scratch.
+            </p>
+          </article>
+          <PaymentMeta grant={access.grant} />
+        </div>
+      ) : null}
+    </Card>
+  );
+}
+
 function MissingConfig() {
   return (
-    <main>
-      <h1>solana-paywall — devnet example</h1>
-      <p>
-        Set <code>VITE_RECEIVING_WALLET</code> to a devnet wallet address you control:
+    <main className="mx-auto flex min-h-screen max-w-2xl flex-col justify-center gap-4 px-6 py-12 text-slate-100">
+      <h1 className="text-2xl font-semibold">solana-paywall — devnet example</h1>
+      <p className="text-slate-300">
+        Set <code className="rounded bg-slate-800 px-1.5 py-0.5">VITE_RECEIVING_WALLET</code>{" "}
+        to a devnet wallet address you control:
       </p>
-      <ol>
+      <ol className="list-decimal space-y-1 pl-6 text-slate-300">
         <li>
-          Copy <code>.env.example</code> to <code>.env.local</code>
+          Copy <code className="rounded bg-slate-800 px-1.5 py-0.5">.env.example</code> to{" "}
+          <code className="rounded bg-slate-800 px-1.5 py-0.5">.env.local</code>
         </li>
         <li>
-          Fill in <code>VITE_RECEIVING_WALLET</code>
+          Fill in <code className="rounded bg-slate-800 px-1.5 py-0.5">VITE_RECEIVING_WALLET</code>
         </li>
         <li>
-          Restart <code>npm run dev</code>
+          Restart <code className="rounded bg-slate-800 px-1.5 py-0.5">npm run dev</code>
         </li>
       </ol>
-      <p>See the README in this folder for the full setup walkthrough.</p>
+      <p className="text-slate-400">See the README in this folder for the full setup walkthrough.</p>
     </main>
   );
 }
@@ -32,42 +193,35 @@ function Demo() {
   const { connected, publicKey } = useWallet();
 
   return (
-    <main>
-      <h1>solana-paywall — devnet example</h1>
-      <p>
-        Client-Verified Mode: everything below runs entirely in this browser tab, no
-        backend involved (see ADR-0002 in the main repo).
-      </p>
-      <p>
-        Paying to: <code>{RECEIVING_WALLET}</code>
-      </p>
+    <main className="mx-auto flex min-h-screen max-w-2xl flex-col gap-6 px-6 py-12 text-slate-100">
+      <header className="space-y-2">
+        <h1 className="text-2xl font-semibold">solana-paywall — devnet example</h1>
+        <p className="text-slate-300">
+          Client-Verified Mode: everything below runs entirely in this browser tab, no
+          backend involved.
+        </p>
+      </header>
 
-      <WalletMultiButton />
+      <Card title="Paying to">
+        <Address value={RECEIVING_WALLET} />
+      </Card>
 
-      {!connected || !publicKey ? (
-        <p>Connect a wallet set to Devnet to continue.</p>
-      ) : (
-        <>
-          <p>
-            Connected as <code>{publicKey.toBase58()}</code>
-          </p>
-          <Paywall
-            resource={sampleResource}
-            connection={connection}
-            receivingWallet={RECEIVING_WALLET}
-          >
-            <article>
-              <h2>Unlocked!</h2>
-              <p>
-                This is the gated content. Your access lasts 1 hour from the moment you
-                paid — reload the page and it'll still show (cached signature fast
-                path), or clear localStorage and reload to see the on-chain Payment
-                Lookup find it again from scratch.
-              </p>
-            </article>
-          </Paywall>
-        </>
-      )}
+      <Card title="Your wallet">
+        <WalletMultiButton />
+        {connected && publicKey ? (
+          <Address value={publicKey.toBase58()} />
+        ) : (
+          <p className="text-sm text-slate-400">Connect a wallet set to Devnet to continue.</p>
+        )}
+      </Card>
+
+      {connected && publicKey ? (
+        <ContentSection
+          resource={sampleResource}
+          connection={connection}
+          receivingWallet={RECEIVING_WALLET}
+        />
+      ) : null}
     </main>
   );
 }

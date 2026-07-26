@@ -20,6 +20,7 @@ const resource: Resource = {
 
 function validTransfer(): ObservedTransfer {
   return {
+    signature: "valid-sig",
     destination: receivingWallet,
     currency: nativeCurrency,
     amount: 50_000_000n,
@@ -30,6 +31,7 @@ function validTransfer(): ObservedTransfer {
 
 function invalidTransfer(): ObservedTransfer {
   return {
+    signature: "invalid-sig",
     destination: receivingWallet,
     currency: nativeCurrency,
     amount: 10_000_000n,
@@ -55,7 +57,8 @@ describe("resolvePaymentBySignature", () => {
     expect(evaluation).toEqual({
       valid: true,
       matchedPrice: { currency: nativeCurrency, amount: 50_000_000n },
-      grant: { kind: "permanent" },
+      grant: { kind: "permanent", paidAt: 1_700_000_000 },
+      signature: "valid-sig",
     });
   });
 
@@ -112,7 +115,8 @@ describe("findPaymentForResource", () => {
     expect(evaluation).toEqual({
       valid: true,
       matchedPrice: { currency: nativeCurrency, amount: 50_000_000n },
-      grant: { kind: "permanent" },
+      grant: { kind: "permanent", paidAt: 1_700_000_000 },
+      signature: "valid-sig",
     });
   });
 

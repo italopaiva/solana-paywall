@@ -112,6 +112,13 @@ export function usePaywall(
         return;
       }
 
+      // A fresh scan (no cached signature) doesn't know it should populate the
+      // cache — do it here so a cleared/missing cache gets repopulated on the
+      // next successful lookup, not left permanently cold.
+      if (evaluation.valid && evaluation.signature) {
+        writeCachedSignature(payerWallet, resource.id, evaluation.signature);
+      }
+
       setAccess(toAccessState(evaluation));
     })().catch((error: unknown) => {
       if (!cancelled) {

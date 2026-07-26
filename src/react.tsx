@@ -7,4 +7,4 @@ export {
   type UsePaywallResult,
 } from "./react/usePaywall.js";
 
-export { Paywall, type PaywallProps } from "./react/Paywall.js";
+export { Paywall, type PaywallClassNames, type PaywallProps } from "./react/Paywall.js";

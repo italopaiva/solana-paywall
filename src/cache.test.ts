@@ -26,6 +26,7 @@ const resource: Resource = {
 
 function validTransfer(): ObservedTransfer {
   return {
+    signature: "valid-sig",
     destination: receivingWallet,
     currency: nativeCurrency,
     amount: 50_000_000n,
@@ -55,7 +56,7 @@ function createInMemoryStore(
 describe("findPaymentForResourceWithCache", () => {
   it("on a cache hit, never calls fetchTransactionHistory", async () => {
     const store = createInMemoryStore({
-      [`${payerWallet}:article-1`]: { kind: "permanent" },
+      [`${payerWallet}:article-1`]: { kind: "permanent", paidAt: now },
     });
     let fetchCalled = false;
     const fetchTransactionHistory: FetchTransactionHistory = async () => {
@@ -73,7 +74,10 @@ describe("findPaymentForResourceWithCache", () => {
     );
 
     expect(fetchCalled).toBe(false);
-    expect(evaluation).toEqual({ valid: true, grant: { kind: "permanent" } });
+    expect(evaluation).toEqual({
+      valid: true,
+      grant: { kind: "permanent", paidAt: now },
+    });
   });
 
   it("on a cache miss, calls fetchTransactionHistory and populates the store", async () => {
@@ -95,6 +99,7 @@ describe("findPaymentForResourceWithCache", () => {
     expect(store.calls.set).toBe(1);
     await expect(store.get(payerWallet, "article-1")).resolves.toEqual({
       kind: "permanent",
+      paidAt: now,
     });
   });
 
@@ -104,7 +109,7 @@ describe("findPaymentForResourceWithCache", () => {
       accessType: { kind: "timed", durationSeconds: 3600 },
     };
     const store = createInMemoryStore({
-      [`${payerWallet}:article-1`]: { kind: "timed", expiresAt: now - 1 },
+      [`${payerWallet}:article-1`]: { kind: "timed", expiresAt: now - 1, paidAt: now - 3601 },
     });
     let fetchCalled = false;
     const fetchTransactionHistory: FetchTransactionHistory = async () => {
@@ -145,7 +150,7 @@ describe("findPaymentForResourceWithCache", () => {
 describe("resolvePaymentBySignatureWithCache", () => {
   it("on a cache hit, never calls fetchTransaction", async () => {
     const store = createInMemoryStore({
-      [`${payerWallet}:article-1`]: { kind: "permanent" },
+      [`${payerWallet}:article-1`]: { kind: "permanent", paidAt: now },
     });
     let fetchCalled = false;
     const fetchTransaction: FetchTransaction = async () => {
@@ -164,7 +169,10 @@ describe("resolvePaymentBySignatureWithCache", () => {
     );
 
     expect(fetchCalled).toBe(false);
-    expect(evaluation).toEqual({ valid: true, grant: { kind: "permanent" } });
+    expect(evaluation).toEqual({
+      valid: true,
+      grant: { kind: "permanent", paidAt: now },
+    });
   });
 
   it("on a cache miss, calls fetchTransaction and populates the store", async () => {

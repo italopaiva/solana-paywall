@@ -18,6 +18,7 @@ const usdcMint = Keypair.generate().publicKey.toBase58();
 
 const nativeCurrency = { kind: "native" } as const;
 const usdcCurrency = { kind: "spl", mint: usdcMint, decimals: 6 } as const;
+const testSignature = "test-signature-1";
 
 function decodeMemo(instruction: { data: Uint8Array }): string {
   return Buffer.from(instruction.data).toString("utf-8");
@@ -124,6 +125,7 @@ describe("evaluatePayment", () => {
 
     const transfer = SystemInstruction.decodeTransfer(request.instructions[0]!);
     const observed: ObservedTransfer = {
+      signature: testSignature,
       destination: transfer.toPubkey.toBase58(),
       currency: nativeCurrency,
       amount: BigInt(transfer.lamports),
@@ -136,7 +138,8 @@ describe("evaluatePayment", () => {
     expect(evaluation).toEqual({
       valid: true,
       matchedPrice: { currency: nativeCurrency, amount: 50_000_000n },
-      grant: { kind: "permanent" },
+      grant: { kind: "permanent", paidAt: 1_700_000_000 },
+      signature: testSignature,
     });
   });
 
@@ -152,6 +155,7 @@ describe("evaluatePayment", () => {
       request.instructions[0]!,
     );
     const observed: ObservedTransfer = {
+      signature: testSignature,
       destination: receivingWallet,
       currency: usdcCurrency,
       amount: transferChecked.data.amount,
@@ -164,12 +168,14 @@ describe("evaluatePayment", () => {
     expect(evaluation).toEqual({
       valid: true,
       matchedPrice: { currency: usdcCurrency, amount: 5_000_000n },
-      grant: { kind: "timed", expiresAt: 1_700_000_000 + 604_800 },
+      grant: { kind: "timed", expiresAt: 1_700_000_000 + 604_800, paidAt: 1_700_000_000 },
+      signature: testSignature,
     });
   });
 
   it("accepts overpayment", () => {
     const observed: ObservedTransfer = {
+      signature: testSignature,
       destination: receivingWallet,
       currency: nativeCurrency,
       amount: 60_000_000n,
@@ -180,12 +186,14 @@ describe("evaluatePayment", () => {
     expect(evaluatePayment(observed, permanentResource, receivingWallet)).toEqual({
       valid: true,
       matchedPrice: { currency: nativeCurrency, amount: 50_000_000n },
-      grant: { kind: "permanent" },
+      grant: { kind: "permanent", paidAt: 1_700_000_000 },
+      signature: testSignature,
     });
   });
 
   it("rejects underpayment", () => {
     const observed: ObservedTransfer = {
+      signature: testSignature,
       destination: receivingWallet,
       currency: nativeCurrency,
       amount: 40_000_000n,
@@ -201,6 +209,7 @@ describe("evaluatePayment", () => {
 
   it("rejects a payment sent to the wrong wallet", () => {
     const observed: ObservedTransfer = {
+      signature: testSignature,
       destination: otherWallet,
       currency: nativeCurrency,
       amount: 50_000_000n,
@@ -217,6 +226,7 @@ describe("evaluatePayment", () => {
   it("rejects a currency the resource doesn't accept", () => {
     const unaccepted = { kind: "spl", mint: Keypair.generate().publicKey.toBase58(), decimals: 9 } as const;
     const observed: ObservedTransfer = {
+      signature: testSignature,
       destination: receivingWallet,
       currency: unaccepted,
       amount: 50_000_000n,
@@ -232,6 +242,7 @@ describe("evaluatePayment", () => {
 
   it("rejects a missing memo", () => {
     const observed: ObservedTransfer = {
+      signature: testSignature,
       destination: receivingWallet,
       currency: nativeCurrency,
       amount: 50_000_000n,
@@ -247,6 +258,7 @@ describe("evaluatePayment", () => {
 
   it("rejects a malformed memo", () => {
     const observed: ObservedTransfer = {
+      signature: testSignature,
       destination: receivingWallet,
       currency: nativeCurrency,
       amount: 50_000_000n,
@@ -262,6 +274,7 @@ describe("evaluatePayment", () => {
 
   it("rejects a memo referencing a different resource", () => {
     const observed: ObservedTransfer = {
+      signature: testSignature,
       destination: receivingWallet,
       currency: nativeCurrency,
       amount: 50_000_000n,
@@ -277,6 +290,7 @@ describe("evaluatePayment", () => {
 
   it("does not let a later change to a resource's configured duration affect an already-evaluated timed grant", () => {
     const observed: ObservedTransfer = {
+      signature: testSignature,
       destination: receivingWallet,
       currency: usdcCurrency,
       amount: 5_000_000n,
@@ -295,7 +309,8 @@ describe("evaluatePayment", () => {
     expect(evaluation).toEqual({
       valid: true,
       matchedPrice: { currency: usdcCurrency, amount: 5_000_000n },
-      grant: { kind: "timed", expiresAt: 1_700_000_000 + 604_800 },
+      grant: { kind: "timed", expiresAt: 1_700_000_000 + 604_800, paidAt: 1_700_000_000 },
+      signature: testSignature,
     });
   });
 });

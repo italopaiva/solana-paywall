@@ -142,11 +142,12 @@ export function evaluatePayment(
 
   const grant: AccessGrant =
     parsedMemo.accessType.kind === "permanent"
-      ? { kind: "permanent" }
+      ? { kind: "permanent", paidAt: transfer.blockTime }
       : {
           kind: "timed",
           expiresAt: transfer.blockTime + parsedMemo.accessType.durationSeconds,
+          paidAt: transfer.blockTime,
         };
 
-  return { valid: true, matchedPrice: priceEntry, grant };
+  return { valid: true, matchedPrice: priceEntry, grant, signature: transfer.signature };
 }

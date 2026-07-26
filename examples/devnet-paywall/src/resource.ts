@@ -21,7 +21,7 @@ export const sampleResource: Resource = {
   priceList: [
     { currency: { kind: "native" }, amount: 10_000_000n }, // 0.01 SOL
     {
-      currency: { kind: "spl", mint: DEVNET_USDC_MINT, decimals: 6 },
+      currency: { kind: "spl", mint: DEVNET_USDC_MINT, decimals: 6, symbol: "USDC" },
       amount: 100_000n, // 0.10 USDC
     },
   ],

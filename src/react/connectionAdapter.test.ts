@@ -105,6 +105,7 @@ describe("parseObservedTransfer", () => {
     const observed = parseObservedTransfer(nativeTransferTx(), receivingWallet);
 
     expect(observed).toEqual({
+      signature: "sig",
       destination: receivingWallet,
       currency: { kind: "native" },
       amount: 50_000_000n,
@@ -117,6 +118,7 @@ describe("parseObservedTransfer", () => {
     const observed = parseObservedTransfer(splTransferTx(), receivingWallet);
 
     expect(observed).toEqual({
+      signature: "sig",
       destination: receivingWallet,
       currency: { kind: "spl", mint: usdcMint, decimals: 6 },
       amount: 5_000_000n,
