@@ -1,0 +1,7 @@
+# Client-Verified Mode is a first-class trust model, not a stub
+
+The React package can independently confirm a payment on-chain via RPC and grant access itself, with no backend involved (Client-Verified Mode). This is a fully-supported mode, not a placeholder that exists only until a real backend is wired up — the separate framework-agnostic lib (Server-Verified Mode) exists for integrators who need a backend to be the authority, e.g. gating a real secret or an API response.
+
+We considered making the React package a payment-collection-only surface — it would submit the transfer and hand back a signature, but never decide access itself, forcing every integration through a backend. We rejected that: the ask explicitly separates "front-end only work" from "a lib for backends" as two independent use cases, and a large share of paywall use cases (gating UI rendering of non-sensitive content — an article, a feature flag) don't need or want a server round-trip. Client-Verified Mode is inherently bypassable by a determined user inspecting client code, which is an acceptable trade-off for that use case and must stay a documented, explicit limitation rather than something integrators discover the hard way.
+
+Integrators gating genuinely sensitive content or server-side resources must use Server-Verified Mode — Client-Verified Mode's unlock decision is never authoritative for anything the client itself shouldn't be able to see.
