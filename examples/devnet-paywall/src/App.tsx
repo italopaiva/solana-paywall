@@ -1,12 +1,17 @@
-import { useConnection, useWallet } from "@solana/wallet-adapter-react";
-import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
-import type { Connection } from "@solana/web3.js";
+import type { ClientWithWallet } from "@solana/kit-plugin-wallet";
+import {
+  useConnect,
+  useConnectedWallet,
+  useDisconnect,
+  useWallets,
+} from "@solana/kit-plugin-wallet/react";
+import { useClient } from "@solana/react";
 import { useEffect, useState, type ReactNode } from "react";
 import type { AccessGrant, Currency, Resource } from "solana-paywall";
-import { usePaywall } from "solana-paywall/react";
+import { usePaywall, type UsePaywallOptions } from "solana-paywall/react";
 import { CurrencyIcon } from "./CurrencyIcon.js";
 import { currencyDecimals, currencyLabel, formatAmount, formatDuration, formatTimestamp } from "./format.js";
-import { RECEIVING_WALLET, sampleResource } from "./resource.js";
+import { RECEIVING_WALLET, rpc, sampleResource } from "./resource.js";
 import { Wallet } from "./Wallet.js";
 
 function Card({ title, children }: { title: string; children: ReactNode }) {
@@ -119,14 +124,16 @@ function PaymentMeta({ grant }: { grant: AccessGrant }) {
 
 function ContentSection({
   resource,
-  connection,
+  rpc: paywallRpc,
   receivingWallet,
+  signer,
 }: {
   resource: Resource;
-  connection: Connection;
+  rpc: UsePaywallOptions["rpc"];
   receivingWallet: string;
+  signer: UsePaywallOptions["signer"];
 }) {
-  const { access, isPaying, pay } = usePaywall(resource, { connection, receivingWallet });
+  const { access, isPaying, pay } = usePaywall(resource, { rpc: paywallRpc, receivingWallet, signer });
 
   return (
     <Card title="Content">
@@ -163,6 +170,51 @@ function ContentSection({
   );
 }
 
+function WalletConnect() {
+  const client = useClient<ClientWithWallet>();
+  const connected = useConnectedWallet(client);
+  const wallets = useWallets(client);
+  const connect = useConnect(client);
+  const disconnect = useDisconnect(client);
+
+  if (connected) {
+    return (
+      <div className="space-y-3">
+        <Address value={connected.account.address} />
+        <button
+          type="button"
+          disabled={disconnect.isRunning}
+          onClick={() => disconnect.dispatch()}
+          className="rounded-md border border-slate-600 px-3 py-1.5 text-sm text-slate-300 transition hover:border-slate-400 hover:text-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Disconnect
+        </button>
+      </div>
+    );
+  }
+
+  if (wallets.length === 0) {
+    return <p className="text-sm text-slate-400">No Solana wallets detected in this browser.</p>;
+  }
+
+  return (
+    <div className="flex flex-wrap gap-3">
+      {wallets.map((wallet) => (
+        <button
+          key={wallet.name}
+          type="button"
+          disabled={connect.isRunning}
+          onClick={() => connect.dispatch(wallet)}
+          className="flex items-center gap-2 rounded-md border border-slate-600 px-3 py-1.5 text-sm text-slate-200 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <img src={wallet.icon} alt="" className="h-4 w-4" />
+          {wallet.name}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function MissingConfig() {
   return (
     <main className="mx-auto flex min-h-screen max-w-2xl flex-col justify-center gap-4 px-6 py-12 text-slate-100">
@@ -189,8 +241,8 @@ function MissingConfig() {
 }
 
 function Demo() {
-  const { connection } = useConnection();
-  const { connected, publicKey } = useWallet();
+  const client = useClient<ClientWithWallet>();
+  const connected = useConnectedWallet(client);
 
   return (
     <main className="mx-auto flex min-h-screen max-w-2xl flex-col gap-6 px-6 py-12 text-slate-100">
@@ -207,19 +259,15 @@ function Demo() {
       </Card>
 
       <Card title="Your wallet">
-        <WalletMultiButton />
-        {connected && publicKey ? (
-          <Address value={publicKey.toBase58()} />
-        ) : (
-          <p className="text-sm text-slate-400">Connect a wallet set to Devnet to continue.</p>
-        )}
+        <WalletConnect />
       </Card>
 
-      {connected && publicKey ? (
+      {connected?.signer ? (
         <ContentSection
           resource={sampleResource}
-          connection={connection}
+          rpc={rpc}
           receivingWallet={RECEIVING_WALLET}
+          signer={connected.signer}
         />
       ) : null}
     </main>

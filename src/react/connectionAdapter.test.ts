@@ -1,89 +1,86 @@
-import { getAssociatedTokenAddressSync } from "@solana/spl-token";
-import { Keypair, PublicKey, type ParsedTransactionWithMeta } from "@solana/web3.js";
+import { findAssociatedTokenPda, TOKEN_PROGRAM_ADDRESS } from "@solana-program/token";
+import { address } from "@solana/kit";
+import bs58 from "bs58";
 import { describe, expect, it } from "vitest";
 import { parseObservedTransfer } from "./connectionAdapter.js";
 
-const receivingWallet = Keypair.generate().publicKey.toBase58();
-const payerWallet = Keypair.generate().publicKey.toBase58();
-const usdcMint = Keypair.generate().publicKey.toBase58();
+type FetchedTx = NonNullable<Parameters<typeof parseObservedTransfer>[0]>;
 
-function nativeTransferTx(
-  overrides: { destination?: string; memoText?: string | null } = {},
-): ParsedTransactionWithMeta {
-  const instructions: ParsedTransactionWithMeta["transaction"]["message"]["instructions"] =
-    [
-      {
-        program: "system",
-        programId: new PublicKey("11111111111111111111111111111111"),
-        parsed: {
-          type: "transfer",
-          info: {
-            source: payerWallet,
-            destination: overrides.destination ?? receivingWallet,
-            lamports: 50_000_000,
-          },
+function randomAddress(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return bs58.encode(bytes);
+}
+
+const receivingWallet = randomAddress();
+const payerWallet = randomAddress();
+const usdcMint = randomAddress();
+
+const MEMO_PROGRAM_ADDRESS = address("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
+const SYSTEM_PROGRAM_ADDRESS = address("11111111111111111111111111111111");
+const TOKEN_PROGRAM_ID = address("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+
+function nativeTransferTx(overrides: { destination?: string; memoText?: string | null } = {}): FetchedTx {
+  const instructions: object[] = [
+    {
+      program: "system",
+      programId: SYSTEM_PROGRAM_ADDRESS,
+      parsed: {
+        type: "transfer",
+        info: {
+          source: payerWallet,
+          destination: overrides.destination ?? receivingWallet,
+          lamports: 50_000_000,
         },
       },
-    ];
+    },
+  ];
 
   if (overrides.memoText !== null) {
     instructions.push({
       program: "spl-memo",
-      programId: new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"),
+      programId: MEMO_PROGRAM_ADDRESS,
       parsed: overrides.memoText ?? "spw1:article-1:p",
     });
   }
 
   return {
-    slot: 1,
-    blockTime: 1_700_000_000,
-    meta: {
-      fee: 5000,
-      preBalances: [],
-      postBalances: [],
-      err: null,
-    },
+    blockTime: 1_700_000_000n,
+    meta: { err: null },
     transaction: {
       signatures: ["sig"],
-      message: {
-        accountKeys: [],
-        recentBlockhash: "blockhash",
-        instructions,
-      },
+      message: { instructions },
     },
-  } as unknown as ParsedTransactionWithMeta;
+  } as unknown as FetchedTx;
 }
 
-function splTransferTx(): ParsedTransactionWithMeta {
+async function splTransferTx(): Promise<FetchedTx> {
+  const [source] = await findAssociatedTokenPda({
+    owner: address(payerWallet),
+    mint: address(usdcMint),
+    tokenProgram: TOKEN_PROGRAM_ADDRESS,
+  });
+  const [destination] = await findAssociatedTokenPda({
+    owner: address(receivingWallet),
+    mint: address(usdcMint),
+    tokenProgram: TOKEN_PROGRAM_ADDRESS,
+  });
+
   return {
-    slot: 1,
-    blockTime: 1_700_000_000,
-    meta: {
-      fee: 5000,
-      preBalances: [],
-      postBalances: [],
-      err: null,
-    },
+    blockTime: 1_700_000_000n,
+    meta: { err: null },
     transaction: {
       signatures: ["sig"],
       message: {
-        accountKeys: [],
-        recentBlockhash: "blockhash",
         instructions: [
           {
             program: "spl-token",
-            programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
+            programId: TOKEN_PROGRAM_ID,
             parsed: {
               type: "transferChecked",
               info: {
-                source: getAssociatedTokenAddressSync(
-                  new PublicKey(usdcMint),
-                  new PublicKey(payerWallet),
-                ).toBase58(),
-                destination: getAssociatedTokenAddressSync(
-                  new PublicKey(usdcMint),
-                  new PublicKey(receivingWallet),
-                ).toBase58(),
+                source,
+                destination,
                 mint: usdcMint,
                 tokenAmount: { amount: "5000000", decimals: 6 },
               },
@@ -91,18 +88,18 @@ function splTransferTx(): ParsedTransactionWithMeta {
           },
           {
             program: "spl-memo",
-            programId: new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"),
+            programId: MEMO_PROGRAM_ADDRESS,
             parsed: "spw1:premium-feed:t:604800",
           },
         ],
       },
     },
-  } as unknown as ParsedTransactionWithMeta;
+  } as unknown as FetchedTx;
 }
 
 describe("parseObservedTransfer", () => {
-  it("normalizes a native SOL transfer with a memo", () => {
-    const observed = parseObservedTransfer(nativeTransferTx(), receivingWallet);
+  it("normalizes a native SOL transfer with a memo", async () => {
+    const observed = await parseObservedTransfer(nativeTransferTx(), receivingWallet);
 
     expect(observed).toEqual({
       signature: "sig",
@@ -114,8 +111,8 @@ describe("parseObservedTransfer", () => {
     });
   });
 
-  it("normalizes an SPL transferChecked transfer, resolving the ATA to the receiving wallet", () => {
-    const observed = parseObservedTransfer(splTransferTx(), receivingWallet);
+  it("normalizes an SPL transferChecked transfer, resolving the ATA to the receiving wallet", async () => {
+    const observed = await parseObservedTransfer(await splTransferTx(), receivingWallet);
 
     expect(observed).toEqual({
       signature: "sig",
@@ -127,9 +124,9 @@ describe("parseObservedTransfer", () => {
     });
   });
 
-  it("passes through a non-matching destination unresolved, so evaluatePayment rejects it", () => {
-    const otherWallet = Keypair.generate().publicKey.toBase58();
-    const observed = parseObservedTransfer(
+  it("passes through a non-matching destination unresolved, so evaluatePayment rejects it", async () => {
+    const otherWallet = randomAddress();
+    const observed = await parseObservedTransfer(
       nativeTransferTx({ destination: otherWallet }),
       receivingWallet,
     );
@@ -138,17 +135,17 @@ describe("parseObservedTransfer", () => {
     expect(observed?.destination).not.toBe(receivingWallet);
   });
 
-  it("returns null for a failed transaction", () => {
+  it("returns null for a failed transaction", async () => {
     const tx = nativeTransferTx();
     const failed = { ...tx, meta: { ...tx.meta!, err: { InstructionError: [0, "Custom"] } } };
-    expect(parseObservedTransfer(failed as ParsedTransactionWithMeta, receivingWallet)).toBeNull();
+    expect(await parseObservedTransfer(failed, receivingWallet)).toBeNull();
   });
 
-  it("returns null when the transaction is missing", () => {
-    expect(parseObservedTransfer(null, receivingWallet)).toBeNull();
+  it("returns null when the transaction is missing", async () => {
+    expect(await parseObservedTransfer(null, receivingWallet)).toBeNull();
   });
 
-  it("returns null when there is no recognizable transfer instruction", () => {
+  it("returns null when there is no recognizable transfer instruction", async () => {
     const tx = nativeTransferTx();
     const noTransfer = {
       ...tx,
@@ -157,13 +154,11 @@ describe("parseObservedTransfer", () => {
         message: { ...tx.transaction.message, instructions: [] },
       },
     };
-    expect(
-      parseObservedTransfer(noTransfer as ParsedTransactionWithMeta, receivingWallet),
-    ).toBeNull();
+    expect(await parseObservedTransfer(noTransfer, receivingWallet)).toBeNull();
   });
 
-  it("reports a missing memo as null, not a throw", () => {
-    const observed = parseObservedTransfer(
+  it("reports a missing memo as null, not a throw", async () => {
+    const observed = await parseObservedTransfer(
       nativeTransferTx({ memoText: null }),
       receivingWallet,
     );

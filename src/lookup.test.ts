@@ -1,4 +1,4 @@
-import { Keypair } from "@solana/web3.js";
+import bs58 from "bs58";
 import { describe, expect, it } from "vitest";
 import {
   findPaymentForResource,
@@ -8,8 +8,14 @@ import {
 } from "./lookup.js";
 import type { ObservedTransfer, Resource } from "./types.js";
 
-const receivingWallet = Keypair.generate().publicKey.toBase58();
-const payerWallet = Keypair.generate().publicKey.toBase58();
+function randomAddress(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return bs58.encode(bytes);
+}
+
+const receivingWallet = randomAddress();
+const payerWallet = randomAddress();
 const nativeCurrency = { kind: "native" } as const;
 
 const resource: Resource = {

@@ -1,13 +1,17 @@
+import { getAddMemoInstruction } from "@solana-program/memo";
+import { getTransferSolInstruction } from "@solana-program/system";
 import {
-  createTransferCheckedInstruction,
-  getAssociatedTokenAddressSync,
-} from "@solana/spl-token";
-import { createMemoInstruction } from "@solana/spl-memo";
+  findAssociatedTokenPda,
+  getTransferCheckedInstruction,
+  TOKEN_PROGRAM_ADDRESS,
+} from "@solana-program/token";
 import {
-  PublicKey,
-  SystemProgram,
-  type TransactionInstruction,
-} from "@solana/web3.js";
+  address,
+  createNoopSigner,
+  type Address,
+  type Instruction,
+  type TransactionSigner,
+} from "@solana/kit";
 import { encodePurchaseMemo, parsePurchaseMemo } from "./memo.js";
 import type {
   AccessGrant,
@@ -21,12 +25,19 @@ import type {
 export type BuildPaymentRequestInput = {
   resource: Resource;
   currency: Currency;
-  payer: string;
+  /**
+   * The paying wallet. A plain address (Server-Verified Mode building a
+   * request with no live wallet yet, or any caller who'll attach signing
+   * separately) gets a noop placeholder signer, which produces no real
+   * signature — pass the actual TransactionSigner (e.g. from a connected
+   * wallet) when you intend to sign and send immediately.
+   */
+  payer: string | TransactionSigner;
   receivingWallet: string;
 };
 
 export type PaymentRequest = {
-  instructions: TransactionInstruction[];
+  instructions: Instruction[];
 };
 
 function currencyMatches(a: Currency, b: Currency): boolean {
@@ -46,41 +57,51 @@ function findPriceEntry(
   return priceList.find((entry) => currencyMatches(entry.currency, currency));
 }
 
-function buildTransferInstruction(
+async function buildTransferInstruction(
   currency: Currency,
   amount: bigint,
-  payer: PublicKey,
-  receivingWallet: PublicKey,
-): TransactionInstruction {
+  payerSigner: TransactionSigner,
+  receivingWallet: Address,
+): Promise<Instruction> {
   if (currency.kind === "native") {
-    return SystemProgram.transfer({
-      fromPubkey: payer,
-      toPubkey: receivingWallet,
-      lamports: amount,
+    return getTransferSolInstruction({
+      source: payerSigner,
+      destination: receivingWallet,
+      amount,
     });
   }
 
-  const mint = new PublicKey(currency.mint);
-  const source = getAssociatedTokenAddressSync(mint, payer);
-  const destination = getAssociatedTokenAddressSync(mint, receivingWallet);
+  const mint = address(currency.mint);
+  const [source] = await findAssociatedTokenPda({
+    owner: payerSigner.address,
+    mint,
+    tokenProgram: TOKEN_PROGRAM_ADDRESS,
+  });
+  const [destination] = await findAssociatedTokenPda({
+    owner: receivingWallet,
+    mint,
+    tokenProgram: TOKEN_PROGRAM_ADDRESS,
+  });
 
-  return createTransferCheckedInstruction(
+  return getTransferCheckedInstruction({
     source,
     mint,
     destination,
-    payer,
+    authority: payerSigner,
     amount,
-    currency.decimals,
-  );
+    decimals: currency.decimals,
+  });
 }
 
 /**
  * Builds the transfer + Purchase Memo instructions for paying for a Resource.
- * Pure — makes no RPC calls and does not send anything.
+ * Pure — makes no RPC calls and does not send anything. Async only because
+ * deriving an SPL associated-token-account address uses @solana/kit's
+ * (browser-native, WebCrypto-backed) address derivation, which is async.
  */
-export function buildPaymentRequest(
+export async function buildPaymentRequest(
   input: BuildPaymentRequestInput,
-): PaymentRequest {
+): Promise<PaymentRequest> {
   const priceEntry = findPriceEntry(input.resource.priceList, input.currency);
   if (!priceEntry) {
     throw new Error(
@@ -88,19 +109,20 @@ export function buildPaymentRequest(
     );
   }
 
-  const payer = new PublicKey(input.payer);
-  const receivingWallet = new PublicKey(input.receivingWallet);
+  const payerSigner =
+    typeof input.payer === "string" ? createNoopSigner(address(input.payer)) : input.payer;
+  const receivingWallet = address(input.receivingWallet);
 
-  const transferInstruction = buildTransferInstruction(
+  const transferInstruction = await buildTransferInstruction(
     input.currency,
     priceEntry.amount,
-    payer,
+    payerSigner,
     receivingWallet,
   );
 
-  const memoInstruction = createMemoInstruction(
-    encodePurchaseMemo(input.resource.id, input.resource.accessType),
-  );
+  const memoInstruction = getAddMemoInstruction({
+    memo: encodePurchaseMemo(input.resource.id, input.resource.accessType),
+  });
 
   return { instructions: [transferInstruction, memoInstruction] };
 }

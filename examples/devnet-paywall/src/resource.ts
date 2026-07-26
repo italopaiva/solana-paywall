@@ -1,3 +1,4 @@
+import { createSolanaRpc } from "@solana/kit";
 import type { Resource } from "solana-paywall";
 
 /**
@@ -6,6 +7,8 @@ import type { Resource } from "solana-paywall";
  * USDC uses 6 decimals on every chain it's issued on.
  */
 export const DEVNET_USDC_MINT = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
+
+export const rpc = createSolanaRpc("https://api.devnet.solana.com");
 
 /** Set via .env.local — see .env.example. */
 export const RECEIVING_WALLET: string = import.meta.env.VITE_RECEIVING_WALLET ?? "";

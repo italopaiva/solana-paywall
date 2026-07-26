@@ -10,10 +10,10 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   // These must resolve to the consumer's own copy, not a bundled snapshot:
-  // - react/wallet-adapter-react provide React Context, which breaks across
-  //   two module instances (the exact bug this fixes: useWallet() reading a
-  //   WalletContext the app's own WalletProvider never provided).
-  // - web3.js classes (PublicKey, Transaction, Connection) are also passed
-  //   across this boundary and rely on identity (instanceof) matching.
-  external: ["react", "@solana/wallet-adapter-react", "@solana/web3.js"],
+  // - react: this hook returns React state: bundling a second copy breaks
+  //   hooks across module instances.
+  // - @solana/kit: Address/Instruction/TransactionSigner objects are passed
+  //   across the caller/library boundary (usePaywall takes a signer and an
+  //   rpc client from the caller) and rely on identity (branding) matching.
+  external: ["react", "@solana/kit"],
 });

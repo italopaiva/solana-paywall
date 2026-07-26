@@ -1,11 +1,29 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useWallet } from "@solana/wallet-adapter-react";
-import { Connection, Transaction } from "@solana/web3.js";
+import {
+  appendTransactionMessageInstructions,
+  createTransactionMessage,
+  pipe,
+  setTransactionMessageFeePayerSigner,
+  setTransactionMessageLifetimeUsingBlockhash,
+  signAndSendTransactionMessageWithSigners,
+  signature as toSignature,
+  type GetLatestBlockhashApi,
+  type GetSignaturesForAddressApi,
+  type GetSignatureStatusesApi,
+  type GetTransactionApi,
+  type Rpc,
+  type TransactionSigner,
+} from "@solana/kit";
+import bs58 from "bs58";
 import { isAccessCurrent } from "../access.js";
 import { findPaymentForResource, resolvePaymentBySignature } from "../lookup.js";
 import { buildPaymentRequest } from "../payment.js";
 import type { AccessGrant, Currency, PaymentEvaluation, Resource } from "../types.js";
 import { createConnectionAdapter } from "./connectionAdapter.js";
+
+type PaywallRpc = Rpc<
+  GetTransactionApi & GetSignaturesForAddressApi & GetLatestBlockhashApi & GetSignatureStatusesApi
+>;
 
 export type PaywallAccessState =
   | { status: "loading" }
@@ -14,9 +32,16 @@ export type PaywallAccessState =
   | { status: "error"; message: string };
 
 export type UsePaywallOptions = {
-  /** Caller-provided RPC connection — this hook never constructs its own. */
-  connection: Connection;
+  /** Caller-provided RPC client — this hook never constructs its own. */
+  rpc: PaywallRpc;
   receivingWallet: string;
+  /**
+   * The connected wallet's signer, or null when no wallet is connected (or
+   * it's read-only). This hook never connects a wallet itself — wire up
+   * wallet discovery/connection (e.g. @solana/kit-plugin-wallet) yourself
+   * and pass the resulting signer through.
+   */
+  signer: TransactionSigner | null;
 };
 
 export type UsePaywallResult = {
@@ -55,6 +80,31 @@ function toAccessState(evaluation: PaymentEvaluation): PaywallAccessState {
   return { status: "not-paid" };
 }
 
+const CONFIRMATION_POLL_INTERVAL_MS = 1000;
+const CONFIRMATION_TIMEOUT_MS = 30_000;
+
+/** Polls getSignatureStatuses until the transaction reaches at least "confirmed", or times out. */
+async function waitForConfirmation(rpc: PaywallRpc, sig: string): Promise<void> {
+  const deadline = Date.now() + CONFIRMATION_TIMEOUT_MS;
+
+  for (;;) {
+    const { value: statuses } = await rpc.getSignatureStatuses([toSignature(sig)]).send();
+    const status = statuses[0];
+
+    if (status?.err) {
+      throw new Error(`Transaction failed: ${JSON.stringify(status.err)}`);
+    }
+    if (status?.confirmationStatus === "confirmed" || status?.confirmationStatus === "finalized") {
+      return;
+    }
+    if (Date.now() > deadline) {
+      throw new Error("Timed out waiting for transaction confirmation");
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, CONFIRMATION_POLL_INTERVAL_MS));
+  }
+}
+
 /**
  * Client-Verified Mode, end-to-end: no backend involved. Per ADR-0002, this
  * hook's unlock decision is never authoritative for anything the client itself
@@ -71,16 +121,15 @@ export function usePaywall(
   resource: Resource,
   options: UsePaywallOptions,
 ): UsePaywallResult {
-  const { publicKey, sendTransaction } = useWallet();
   const [access, setAccess] = useState<PaywallAccessState>({ status: "loading" });
   const [isPaying, setIsPaying] = useState(false);
 
   const adapter = useMemo(
-    () => createConnectionAdapter(options.connection, options.receivingWallet),
-    [options.connection, options.receivingWallet],
+    () => createConnectionAdapter(options.rpc, options.receivingWallet),
+    [options.rpc, options.receivingWallet],
   );
 
-  const payerWallet = publicKey?.toBase58() ?? null;
+  const payerWallet = options.signer?.address ?? null;
 
   useEffect(() => {
     if (!payerWallet) {
@@ -141,34 +190,35 @@ export function usePaywall(
 
   const pay = useCallback(
     async (currency: Currency) => {
-      if (!publicKey) {
+      const signer = options.signer;
+      if (!signer) {
         throw new Error("Wallet not connected");
       }
 
       setIsPaying(true);
       try {
-        const request = buildPaymentRequest({
+        const request = await buildPaymentRequest({
           resource,
           currency,
-          payer: publicKey.toBase58(),
+          payer: signer,
           receivingWallet: options.receivingWallet,
         });
 
-        const { blockhash, lastValidBlockHeight } =
-          await options.connection.getLatestBlockhash();
-        const transaction = new Transaction({
-          feePayer: publicKey,
-          blockhash,
-          lastValidBlockHeight,
-        }).add(...request.instructions);
+        const { value: latestBlockhash } = await options.rpc.getLatestBlockhash().send();
 
-        const signature = await sendTransaction(transaction, options.connection);
-        await options.connection.confirmTransaction(
-          { signature, blockhash, lastValidBlockHeight },
-          "confirmed",
+        const message = pipe(
+          createTransactionMessage({ version: 0 }),
+          (m) => setTransactionMessageFeePayerSigner(signer, m),
+          (m) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, m),
+          (m) => appendTransactionMessageInstructions(request.instructions, m),
         );
 
-        writeCachedSignature(publicKey.toBase58(), resource.id, signature);
+        const signatureBytes = await signAndSendTransactionMessageWithSigners(message);
+        const signature = bs58.encode(signatureBytes);
+
+        await waitForConfirmation(options.rpc, signature);
+
+        writeCachedSignature(signer.address, resource.id, signature);
 
         const evaluation = await resolvePaymentBySignature(
           signature,
@@ -189,14 +239,7 @@ export function usePaywall(
         setIsPaying(false);
       }
     },
-    [
-      publicKey,
-      resource,
-      options.receivingWallet,
-      options.connection,
-      sendTransaction,
-      adapter,
-    ],
+    [options.signer, resource, options.receivingWallet, options.rpc, adapter],
   );
 
   return { access, isPaying, pay };

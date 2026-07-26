@@ -1,15 +1,32 @@
-import { getAssociatedTokenAddressSync } from "@solana/spl-token";
-import { MEMO_PROGRAM_ID } from "@solana/spl-memo";
+import { MEMO_PROGRAM_ADDRESS } from "@solana-program/memo";
+import { findAssociatedTokenPda, TOKEN_PROGRAM_ADDRESS } from "@solana-program/token";
 import {
-  PublicKey,
-  type Connection,
-  type ParsedInstruction,
-  type ParsedTransactionWithMeta,
-  type PartiallyDecodedInstruction,
-} from "@solana/web3.js";
+  address,
+  signature,
+  type Address,
+  type GetSignaturesForAddressApi,
+  type GetTransactionApi,
+  type Rpc,
+} from "@solana/kit";
 import bs58 from "bs58";
 import type { FetchTransaction, FetchTransactionHistory } from "../lookup.js";
 import type { Currency, ObservedTransfer } from "../types.js";
+
+type PaywallRpc = Rpc<GetTransactionApi & GetSignaturesForAddressApi>;
+
+type ParsedTransactionInstruction = Readonly<{
+  parsed: { info?: object; type: string };
+  program: string;
+  programId: Address;
+}>;
+
+type PartiallyDecodedTransactionInstruction = Readonly<{
+  accounts: readonly Address[];
+  data: string;
+  programId: Address;
+}>;
+
+type TransactionInstruction = ParsedTransactionInstruction | PartiallyDecodedTransactionInstruction;
 
 type ExtractedTransfer = {
   source: string;
@@ -19,14 +36,12 @@ type ExtractedTransfer = {
 };
 
 function isParsedInstruction(
-  instruction: ParsedInstruction | PartiallyDecodedInstruction,
-): instruction is ParsedInstruction {
+  instruction: TransactionInstruction,
+): instruction is ParsedTransactionInstruction {
   return "parsed" in instruction;
 }
 
-function extractMemo(
-  instructions: (ParsedInstruction | PartiallyDecodedInstruction)[],
-): string | null {
+function extractMemo(instructions: readonly TransactionInstruction[]): string | null {
   for (const instruction of instructions) {
     if (isParsedInstruction(instruction)) {
       if (instruction.program === "spl-memo" && typeof instruction.parsed === "string") {
@@ -34,9 +49,9 @@ function extractMemo(
       }
       continue;
     }
-    if (instruction.programId.equals(MEMO_PROGRAM_ID)) {
+    if (instruction.programId === MEMO_PROGRAM_ADDRESS) {
       try {
-        return Buffer.from(bs58.decode(instruction.data)).toString("utf-8");
+        return new TextDecoder().decode(bs58.decode(instruction.data));
       } catch {
         return null;
       }
@@ -46,7 +61,7 @@ function extractMemo(
 }
 
 function extractTransfer(
-  instructions: (ParsedInstruction | PartiallyDecodedInstruction)[],
+  instructions: readonly TransactionInstruction[],
 ): ExtractedTransfer | null {
   for (const instruction of instructions) {
     if (!isParsedInstruction(instruction)) {
@@ -93,19 +108,20 @@ function extractTransfer(
 }
 
 /** Whether `accountAddress` (a wallet, for native; a token account, for SPL) belongs to `wallet`. */
-function resolvesToWallet(
+async function resolvesToWallet(
   accountAddress: string,
   wallet: string,
   currency: Currency,
-): boolean {
+): Promise<boolean> {
   if (currency.kind === "native") {
     return accountAddress === wallet;
   }
-  const expectedAta = getAssociatedTokenAddressSync(
-    new PublicKey(currency.mint),
-    new PublicKey(wallet),
-  );
-  return accountAddress === expectedAta.toBase58();
+  const [expectedAta] = await findAssociatedTokenPda({
+    owner: address(wallet),
+    mint: address(currency.mint),
+    tokenProgram: TOKEN_PROGRAM_ADDRESS,
+  });
+  return accountAddress === expectedAta;
 }
 
 type ParsedCandidate = {
@@ -115,14 +131,23 @@ type ParsedCandidate = {
   blockTime: number;
 };
 
+type FetchedTransaction = {
+  blockTime: bigint | null;
+  meta: { err: unknown } | null;
+  transaction: {
+    signatures: readonly string[];
+    message: { instructions: readonly TransactionInstruction[] };
+  };
+} | null;
+
 /** Shared by parseObservedTransfer and the history scan: validity + extraction only. */
-function parseCandidate(tx: ParsedTransactionWithMeta | null): ParsedCandidate | null {
+function parseCandidate(tx: FetchedTransaction): ParsedCandidate | null {
   if (!tx || !tx.meta || tx.meta.err || tx.blockTime == null) {
     return null;
   }
 
-  const signature = tx.transaction.signatures[0];
-  if (!signature) {
+  const txSignature = tx.transaction.signatures[0];
+  if (!txSignature) {
     return null;
   }
 
@@ -132,33 +157,34 @@ function parseCandidate(tx: ParsedTransactionWithMeta | null): ParsedCandidate |
   }
 
   return {
-    signature,
+    signature: txSignature,
     extracted,
     memo: extractMemo(tx.transaction.message.instructions),
-    blockTime: tx.blockTime,
+    blockTime: Number(tx.blockTime),
   };
 }
 
 /**
- * Pure: normalizes a parsed RPC transaction into an ObservedTransfer.
- * Returns null if the transaction is missing, failed, or contains no recognizable
- * SOL/SPL transfer instruction — it does not itself judge whether the transfer
- * went to the right wallet; evaluatePayment does that.
+ * Pure (no RPC calls of its own beyond ATA derivation, which is local crypto,
+ * not a network call): normalizes a fetched RPC transaction into an
+ * ObservedTransfer. Returns null if the transaction is missing, failed, or
+ * contains no recognizable SOL/SPL transfer instruction — it does not itself
+ * judge whether the transfer went to the right wallet; evaluatePayment does that.
  */
-export function parseObservedTransfer(
-  tx: ParsedTransactionWithMeta | null,
+export async function parseObservedTransfer(
+  tx: FetchedTransaction,
   receivingWallet: string,
-): ObservedTransfer | null {
+): Promise<ObservedTransfer | null> {
   const candidate = parseCandidate(tx);
   if (!candidate) {
     return null;
   }
 
-  const destination = resolvesToWallet(
+  const destination = (await resolvesToWallet(
     candidate.extracted.destination,
     receivingWallet,
     candidate.extracted.currency,
-  )
+  ))
     ? receivingWallet
     : candidate.extracted.destination;
 
@@ -189,19 +215,22 @@ async function fetchInBatches<T, R>(
 
 /**
  * Builds real fetchTransaction/fetchTransactionHistory adapters backed by an
- * @solana/web3.js Connection, for Client-Verified Mode's usePaywall hook.
+ * @solana/kit RPC client, for Client-Verified Mode's usePaywall hook.
  */
 export function createConnectionAdapter(
-  connection: Connection,
+  rpc: PaywallRpc,
   receivingWallet: string,
 ): {
   fetchTransaction: FetchTransaction;
   fetchTransactionHistory: FetchTransactionHistory;
 } {
-  const fetchTransaction: FetchTransaction = async (signature) => {
-    const tx = await connection.getParsedTransaction(signature, {
-      maxSupportedTransactionVersion: 0,
-    });
+  const getParsedTransaction = (sig: string) =>
+    rpc
+      .getTransaction(signature(sig), { encoding: "jsonParsed", maxSupportedTransactionVersion: 0 })
+      .send() as Promise<FetchedTransaction>;
+
+  const fetchTransaction: FetchTransaction = async (sig) => {
+    const tx = await getParsedTransaction(sig);
     return parseObservedTransfer(tx, receivingWallet);
   };
 
@@ -209,16 +238,14 @@ export function createConnectionAdapter(
     payerWallet,
     resolvedReceivingWallet,
   ) => {
-    const signatures = await connection.getSignaturesForAddress(
-      new PublicKey(resolvedReceivingWallet),
-      { limit: 1000 },
-    );
+    const signatures = await rpc
+      .getSignaturesForAddress(address(resolvedReceivingWallet), { limit: 1000 })
+      .send();
 
     const transactions = await fetchInBatches(
-      signatures,
+      [...signatures],
       HISTORY_FETCH_BATCH_SIZE,
-      ({ signature }) =>
-        connection.getParsedTransaction(signature, { maxSupportedTransactionVersion: 0 }),
+      ({ signature: sig }) => getParsedTransaction(sig),
     );
 
     const transfers: ObservedTransfer[] = [];
@@ -227,15 +254,15 @@ export function createConnectionAdapter(
       if (!candidate) {
         continue;
       }
-      if (!resolvesToWallet(candidate.extracted.source, payerWallet, candidate.extracted.currency)) {
+      if (!(await resolvesToWallet(candidate.extracted.source, payerWallet, candidate.extracted.currency))) {
         continue;
       }
       if (
-        !resolvesToWallet(
+        !(await resolvesToWallet(
           candidate.extracted.destination,
           resolvedReceivingWallet,
           candidate.extracted.currency,
-        )
+        ))
       ) {
         continue;
       }

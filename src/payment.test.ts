@@ -1,38 +1,51 @@
+import { parseAddMemoInstruction } from "@solana-program/memo";
+import { parseTransferSolInstruction } from "@solana-program/system";
+import { findAssociatedTokenPda, parseTransferCheckedInstruction, TOKEN_PROGRAM_ADDRESS } from "@solana-program/token";
 import {
-  decodeTransferCheckedInstruction,
-  getAssociatedTokenAddressSync,
-} from "@solana/spl-token";
-import {
-  Keypair,
-  PublicKey,
-  SystemInstruction,
-} from "@solana/web3.js";
+  address,
+  type AccountMeta,
+  type Instruction,
+  type InstructionWithAccounts,
+  type InstructionWithData,
+  type ReadonlyUint8Array,
+} from "@solana/kit";
+import bs58 from "bs58";
 import { describe, expect, it } from "vitest";
 import { buildPaymentRequest, evaluatePayment } from "./payment.js";
 import type { ObservedTransfer, Resource } from "./types.js";
 
-const payer = Keypair.generate().publicKey.toBase58();
-const receivingWallet = Keypair.generate().publicKey.toBase58();
-const otherWallet = Keypair.generate().publicKey.toBase58();
-const usdcMint = Keypair.generate().publicKey.toBase58();
+function randomAddress(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return bs58.encode(bytes);
+}
+
+type FullInstruction = Instruction &
+  InstructionWithAccounts<readonly AccountMeta[]> &
+  InstructionWithData<ReadonlyUint8Array>;
+
+const payer = randomAddress();
+const receivingWallet = randomAddress();
+const otherWallet = randomAddress();
+const usdcMint = randomAddress();
 
 const nativeCurrency = { kind: "native" } as const;
 const usdcCurrency = { kind: "spl", mint: usdcMint, decimals: 6 } as const;
 const testSignature = "test-signature-1";
 
-function decodeMemo(instruction: { data: Uint8Array }): string {
-  return Buffer.from(instruction.data).toString("utf-8");
+function decodeMemo(instruction: Instruction): string {
+  return parseAddMemoInstruction(instruction as FullInstruction).data.memo;
 }
 
 describe("buildPaymentRequest", () => {
-  it("builds a native SOL transfer plus a memo instruction", () => {
+  it("builds a native SOL transfer plus a memo instruction", async () => {
     const resource: Resource = {
       id: "article-1",
       accessType: { kind: "permanent" },
       priceList: [{ currency: nativeCurrency, amount: 50_000_000n }],
     };
 
-    const request = buildPaymentRequest({
+    const request = await buildPaymentRequest({
       resource,
       currency: nativeCurrency,
       payer,
@@ -41,61 +54,60 @@ describe("buildPaymentRequest", () => {
 
     expect(request.instructions).toHaveLength(2);
 
-    const transfer = SystemInstruction.decodeTransfer(request.instructions[0]!);
-    expect(transfer.toPubkey.toBase58()).toBe(receivingWallet);
-    expect(BigInt(transfer.lamports)).toBe(50_000_000n);
+    const transfer = parseTransferSolInstruction(request.instructions[0] as FullInstruction);
+    expect(transfer.accounts.destination.address).toBe(receivingWallet);
+    expect(transfer.data.amount).toBe(50_000_000n);
 
     expect(decodeMemo(request.instructions[1]!)).toBe("spw1:article-1:p");
   });
 
-  it("builds an SPL transferChecked instruction for a timed resource, and locks the memo wire format", () => {
+  it("builds an SPL transferChecked instruction for a timed resource, and locks the memo wire format", async () => {
     const resource: Resource = {
       id: "premium-feed",
       accessType: { kind: "timed", durationSeconds: 604_800 },
       priceList: [{ currency: usdcCurrency, amount: 5_000_000n }],
     };
 
-    const request = buildPaymentRequest({
+    const request = await buildPaymentRequest({
       resource,
       currency: usdcCurrency,
       payer,
       receivingWallet,
     });
 
-    const transferChecked = decodeTransferCheckedInstruction(
-      request.instructions[0]!,
+    const transferChecked = parseTransferCheckedInstruction(
+      request.instructions[0] as FullInstruction,
     );
-    expect(transferChecked.keys.mint.pubkey.toBase58()).toBe(usdcMint);
+    expect(transferChecked.accounts.mint.address).toBe(usdcMint);
     expect(transferChecked.data.amount).toBe(5_000_000n);
     expect(transferChecked.data.decimals).toBe(6);
-    expect(transferChecked.keys.destination.pubkey.toBase58()).toBe(
-      getAssociatedTokenAddressSync(
-        new PublicKey(usdcMint),
-        new PublicKey(receivingWallet),
-      ).toBase58(),
-    );
+
+    const [expectedDestination] = await findAssociatedTokenPda({
+      owner: address(receivingWallet),
+      mint: address(usdcMint),
+      tokenProgram: TOKEN_PROGRAM_ADDRESS,
+    });
+    expect(transferChecked.accounts.destination.address).toBe(expectedDestination);
 
     // Locks the literal wire format: version:resourceId:t:durationSeconds
-    expect(decodeMemo(request.instructions[1]!)).toBe(
-      "spw1:premium-feed:t:604800",
-    );
+    expect(decodeMemo(request.instructions[1]!)).toBe("spw1:premium-feed:t:604800");
   });
 
-  it("throws when the resource does not accept the requested currency", () => {
+  it("throws when the resource does not accept the requested currency", async () => {
     const resource: Resource = {
       id: "article-1",
       accessType: { kind: "permanent" },
       priceList: [{ currency: nativeCurrency, amount: 50_000_000n }],
     };
 
-    expect(() =>
+    await expect(
       buildPaymentRequest({
         resource,
         currency: usdcCurrency,
         payer,
         receivingWallet,
       }),
-    ).toThrow();
+    ).rejects.toThrow();
   });
 });
 
@@ -115,20 +127,20 @@ describe("evaluatePayment", () => {
     priceList: [{ currency: usdcCurrency, amount: 5_000_000n }],
   };
 
-  it("round-trips a native permanent payment built by buildPaymentRequest", () => {
-    const request = buildPaymentRequest({
+  it("round-trips a native permanent payment built by buildPaymentRequest", async () => {
+    const request = await buildPaymentRequest({
       resource: permanentResource,
       currency: nativeCurrency,
       payer,
       receivingWallet,
     });
 
-    const transfer = SystemInstruction.decodeTransfer(request.instructions[0]!);
+    const transfer = parseTransferSolInstruction(request.instructions[0] as FullInstruction);
     const observed: ObservedTransfer = {
       signature: testSignature,
-      destination: transfer.toPubkey.toBase58(),
+      destination: transfer.accounts.destination.address,
       currency: nativeCurrency,
-      amount: BigInt(transfer.lamports),
+      amount: transfer.data.amount,
       memo: decodeMemo(request.instructions[1]!),
       blockTime: 1_700_000_000,
     };
@@ -143,16 +155,16 @@ describe("evaluatePayment", () => {
     });
   });
 
-  it("round-trips an SPL timed payment built by buildPaymentRequest, computing expiresAt from blockTime + duration", () => {
-    const request = buildPaymentRequest({
+  it("round-trips an SPL timed payment built by buildPaymentRequest, computing expiresAt from blockTime + duration", async () => {
+    const request = await buildPaymentRequest({
       resource: timedResource,
       currency: usdcCurrency,
       payer,
       receivingWallet,
     });
 
-    const transferChecked = decodeTransferCheckedInstruction(
-      request.instructions[0]!,
+    const transferChecked = parseTransferCheckedInstruction(
+      request.instructions[0] as FullInstruction,
     );
     const observed: ObservedTransfer = {
       signature: testSignature,
@@ -224,7 +236,7 @@ describe("evaluatePayment", () => {
   });
 
   it("rejects a currency the resource doesn't accept", () => {
-    const unaccepted = { kind: "spl", mint: Keypair.generate().publicKey.toBase58(), decimals: 9 } as const;
+    const unaccepted = { kind: "spl", mint: randomAddress(), decimals: 9 } as const;
     const observed: ObservedTransfer = {
       signature: testSignature,
       destination: receivingWallet,
